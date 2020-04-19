@@ -1704,21 +1704,24 @@ public final class EnhancedQueueExecutor extends EnhancedQueueExecutorBase6 impl
         if (TAIL_LOCK) lockTail();
         TaskNode tail = this.tail;
         TaskNode node = null;
+        int spins = 0;
         for (;;) {
             tailNext = tail.getNext();
             if (tailNext instanceof TaskNode) {
-                TaskNode tailNextTaskNode;
-                do {
-                    if (UPDATE_STATISTICS) spinMisses.increment();
-                    tailNextTaskNode = (TaskNode) tailNext;
-                    // retry
-                    tail = tailNextTaskNode;
-                    tailNext = tail.getNext();
-                } while (tailNext instanceof TaskNode);
-                // opportunistically update for the possible benefit of other threads
-                if (UPDATE_TAIL) compareAndSetTail(tail, tailNextTaskNode);
+                // Another producer has won the race to enqueue a task. Instead of traversing
+                // the linked list, we back off and retry for more predictable performance.
+                if (spins == YIELD_SPINS) {
+                    spins = 0;
+                    Thread.yield();
+                } else {
+                    spins++;
+                    JDKSpecific.onSpinWait();
+                }
+                if (UPDATE_STATISTICS) spinMisses.increment();
+                tail = this.tail;
+                continue;
             }
-            // we've progressed to the first non-task node, as far as we can see
+            // We've encountered the first non-task node, as far as we can see
             assert ! (tailNext instanceof TaskNode);
             if (tailNext instanceof PoolThreadNode) {
                 final QNode tailNextNext = tailNext.getNext();
